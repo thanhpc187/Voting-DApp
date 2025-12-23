@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VoteChain GOTY</title>
+    
+    <!-- 1. Nạp Font chữ đẹp (Inter) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    
+    <!-- 2. Nạp Tailwind CSS trực tiếp (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 3. Cấu hình màu sắc GOTY ngay tại đây -->
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+            },
+            colors: {
+              purple: {
+                400: '#a78bfa',
+                500: '#8b5cf6',
+                600: '#7c3aed',
+                900: '#4c1d95',
+              }
+            }
+          }
+        }
+      }
+    </script>
+  </head>
+  <body class="bg-slate-950 text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

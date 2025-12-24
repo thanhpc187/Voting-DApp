@@ -1,0 +1,5 @@
+export const CONTRACT_ADDRESS = "0x639804795c7515685Eb0a72C7841a9f1693252aF";
+export const TARGET_CHAIN_ID = 11155111;
+export const TARGET_NETWORK_NAME = "Sepolia";
+
+

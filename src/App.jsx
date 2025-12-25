@@ -3,21 +3,7 @@ import { Trophy, Gamepad2, Zap, Lock } from "lucide-react";
 import VOTING_ABI from "./abi.json";
 import { CONTRACT_ADDRESS } from "./constants/contract";
 import { TARGET_CHAIN_ID, TARGET_NETWORK_NAME } from "./constants/contract";
-import { connectWallet, createReadOnlyWeb3, createVotingContract, shortAddress } from "./services/web3";
-import {
-  addCandidateTx,
-  createElectionTx,
-  getCandidate,
-  getElectionLegacy,
-  getElectionMeta,
-  getElectionsCount,
-  getMyVote,
-  hasVoted,
-  isUserEligible,
-  registerVotersTx,
-  revokeVoteTx,
-  voteTx,
-} from "./services/votingApi";
+import { connectWallet, createVotingContract, shortAddress } from "./services/web3";
 
 // Danh sách game mẫu
 const GOTY_GAMES = ["Elden Ring", "Dragon's Dogma 2", "Black Myth: Wukong", "Final Fantasy VII", "Helldivers 2"];
@@ -25,8 +11,6 @@ const GOTY_GAMES = ["Elden Ring", "Dragon's Dogma 2", "Black Myth: Wukong", "Fin
 export default function App() {
   const [account, setAccount] = useState(null);
   const [contract, setContract] = useState(null);
-  const [readContract, setReadContract] = useState(null);
-  const [rpcMode, setRpcMode] = useState("metamask"); // metamask | alchemy
   const [chainId, setChainId] = useState(null);
   const [wrongNetwork, setWrongNetwork] = useState(false);
   const [contractHasCode, setContractHasCode] = useState(true);
@@ -51,6 +35,16 @@ export default function App() {
   const [debugLog, setDebugLog] = useState([]);
   const addLog = (msg) => setDebugLog(prev => [msg, ...prev]);
 
+  const sendWithEstimate = async (method) => {
+    try {
+      const gas = await method.estimateGas({ from: account });
+      const gasNum = typeof gas === "bigint" ? Number(gas) : Number(gas);
+      return await method.send({ from: account, gas: gasNum });
+    } catch (e) {
+      return await method.send({ from: account });
+    }
+  };
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -70,18 +64,7 @@ export default function App() {
 
         const signerContract = createVotingContract(web3, VOTING_ABI, CONTRACT_ADDRESS);
         setContract(signerContract);
-
-        const ro = createReadOnlyWeb3();
-        if (ro) {
-          setRpcMode("alchemy");
-          const roContract = createVotingContract(ro, VOTING_ABI, CONTRACT_ADDRESS);
-          setReadContract(roContract);
-          if (!isWrong) loadData(roContract, acc);
-        } else {
-          setRpcMode("metamask");
-          setReadContract(null);
-          if (!isWrong) loadData(signerContract, acc);
-        }
+        if (!isWrong) loadData(signerContract, acc);
 
         window.ethereum?.on("accountsChanged", () => window.location.reload());
         window.ethereum?.on("chainChanged", () => window.location.reload());
@@ -120,25 +103,24 @@ export default function App() {
 
   // Khi chọn sự kiện khác, load lại: voteOf + eligible
   useEffect(() => {
-    const c = readContract || contract;
-    if (c && selectedElection && account) {
+    if (contract && selectedElection && account) {
       const run = async () => {
         try {
           // Prefer V2: voteOf() gives candidateId (0 = none). If not supported, fallback to legacy hasVoted().
           try {
-            const vote = await getMyVote(c, selectedElection.id, account);
+            const vote = await contract.methods.voteOf(selectedElection.id, account).call();
             setSupportsV2(true);
             setLegacyHasVoted(false);
             setMyVote(Number(vote) || 0);
           } catch (e) {
             setSupportsV2(false);
             setMyVote(0);
-            const hv = await hasVoted(c, selectedElection.id, account);
+            const hv = await contract.methods.hasVoted(selectedElection.id, account).call();
             setLegacyHasVoted(!!hv);
           }
 
           if (selectedElection.useWhitelist) {
-            const ok = await isUserEligible(c, selectedElection.id, account);
+            const ok = await contract.methods.isEligible(selectedElection.id, account).call();
             setIsEligible(!!ok);
           } else {
             setIsEligible(true);
@@ -149,7 +131,7 @@ export default function App() {
       };
       run();
     }
-  }, [selectedElection, account, contract, readContract]);
+  }, [selectedElection, account, contract]);
 
   const formatTime = (sec) => {
     const n = Number(sec || 0);
@@ -171,7 +153,7 @@ export default function App() {
     setLoading(true);
     setLoadError("");
     try {
-      const count = await getElectionsCount(contractInstance);
+      const count = await contractInstance.methods.electionsCount().call();
       const arr = [];
       for (let i = 1; i <= Number(count); i++) {
         try {
@@ -179,7 +161,7 @@ export default function App() {
 
             // Prefer V2 meta; if ABI/contract mismatch, fallback to legacy elections(electionId)
             try {
-              const meta = await getElectionMeta(contractInstance, i);
+              const meta = await contractInstance.methods.getElectionMeta(i).call();
               // VotingPlatform.sol: getElectionMeta(electionId) returns (title, owner, startTime, endTime, isDeleted, useWhitelist, candidatesCount)
               safeMeta = {
                 id: i,
@@ -192,7 +174,7 @@ export default function App() {
                 candidatesCount: Number(meta.candidatesCount ?? meta[6] ?? 0),
               };
             } catch (e) {
-              const legacy = await getElectionLegacy(contractInstance, i);
+              const legacy = await contractInstance.methods.elections(i).call();
               safeMeta = {
                 id: Number(legacy.id ?? legacy[0]),
                 title: legacy.title ?? legacy[1],
@@ -209,7 +191,7 @@ export default function App() {
             const candidates = [];
             if (safeMeta.candidatesCount > 0) {
                 for (let j = 1; j <= safeMeta.candidatesCount; j++) {
-                    const c = await getCandidate(contractInstance, i, j);
+                    const c = await contractInstance.methods.candidates(i, j).call();
                     candidates.push({ id: Number(c.id), name: c.name, voteCount: Number(c.voteCount) });
                 }
             }
@@ -236,7 +218,9 @@ export default function App() {
     if (!duration || duration <= 0) return;
     setIsDeploying(true);
     try {
-      await createElectionTx(contract, account, newTitle, duration, !!newUseWhitelist);
+      // V2 signature
+      const m = contract.methods.createElection(newTitle, duration, !!newUseWhitelist);
+      await sendWithEstimate(m);
       setNewTitle("");
       setNewDurationSeconds("3600");
       setNewUseWhitelist(false);
@@ -250,7 +234,8 @@ export default function App() {
     if (!newCandidateName) return;
     setIsDeploying(true);
     try {
-      await addCandidateTx(contract, account, selectedElection.id, newCandidateName);
+      const m = contract.methods.addCandidate(selectedElection.id, newCandidateName);
+      await sendWithEstimate(m);
       setNewCandidateName("");
       await loadData(contract, account);
     } catch (err) { addLog(`LỖI THÊM: ${err.message}`); }
@@ -263,7 +248,8 @@ export default function App() {
     setIsDeploying(true);
     try {
         for (const game of GOTY_GAMES) {
-            await addCandidateTx(contract, account, selectedElection.id, game);
+            const m = contract.methods.addCandidate(selectedElection.id, game);
+            await sendWithEstimate(m);
         }
         await loadData(contract, account);
     } catch (err) { addLog(`LỖI AUTO: ${err.message}`); }
@@ -273,7 +259,8 @@ export default function App() {
   const handleVote = async (candId) => {
     setIsDeploying(true);
     try {
-      await voteTx(contract, account, selectedElection.id, candId);
+      const m = contract.methods.vote(selectedElection.id, candId);
+      await sendWithEstimate(m);
       addLog("Vote thành công!");
       await loadData(contract, account);
       // Reload xong sẽ tự sync lại myVote từ useEffect
@@ -284,7 +271,8 @@ export default function App() {
   const handleRevokeVote = async () => {
     setIsDeploying(true);
     try {
-      await revokeVoteTx(contract, account, selectedElection.id);
+      const m = contract.methods.revokeVote(selectedElection.id);
+      await sendWithEstimate(m);
       addLog("Revoke vote thành công!");
       await loadData(contract, account);
     } catch (err) {
@@ -299,7 +287,8 @@ export default function App() {
 
     setIsDeploying(true);
     try {
-      await registerVotersTx(contract, account, selectedElection.id, voters);
+      const m = contract.methods.registerVoters(selectedElection.id, voters);
+      await sendWithEstimate(m);
       addLog(`Whitelist thành công: +${voters.length} voters`);
       setWhitelistInput("");
       await loadData(contract, account);
@@ -328,9 +317,6 @@ export default function App() {
              >
                + New Event
              </button>
-             <div className="px-3 py-2 bg-[#0f172a] border border-white/5 rounded-lg text-[10px] font-mono text-white/40">
-               RPC: {rpcMode === "alchemy" ? "Alchemy" : "MetaMask"}
-             </div>
              <div className="px-3 py-2 bg-[#0f172a] border border-white/5 rounded-lg text-xs font-mono text-white/60">
                 {account ? shortAddress(account) : "No Wallet"}
              </div>

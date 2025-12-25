@@ -22,4 +22,29 @@ Create a file `.env.local` (do not commit) with:
 
 `VITE_ALCHEMY_SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>`
 
-After restarting `npm run dev`, the UI will show `RPC: Alchemy` in the header when it is being used.
+Then restart `npm run dev`.
+
+## Run the app (for anyone cloning this repo)
+You do **NOT** need any Alchemy keys or private keys just to run the UI.
+
+```powershell
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173` and connect with the MetaMask extension on **Sepolia**.
+
+## Deploy the contract (optional)
+Deploy is only needed if you want your own contract address.
+
+Create a `.env` file in the project root (do not commit) with:
+
+`SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>`
+`DEPLOYER_PRIVATE_KEY=0x<YOUR_PRIVATE_KEY>`
+
+Then:
+
+```powershell
+npm run compile
+npm run deploy:sepolia
+```

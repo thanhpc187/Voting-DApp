@@ -1,50 +1,41 @@
-# React + Vite
+# Voting DApp (Sepolia) — React + Vite + MetaMask
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Ứng dụng bỏ phiếu chạy trên Ethereum testnet **Sepolia**. Dữ liệu (cuộc bầu cử/ứng viên/phiếu bầu) được lưu trong smart contract trên blockchain; giao diện web dùng MetaMask để ký giao dịch.
 
-Currently, two official plugins are available:
+### Yêu cầu
+- **Node.js** (khuyến nghị LTS)
+- **MetaMask** (Chrome/Edge) và chọn mạng **Sepolia**
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
-
-## Optional: Use Alchemy RPC for read-only calls
-This app uses MetaMask (`window.ethereum`) by default. You can optionally use an Alchemy RPC for **read-only** calls (loading elections/candidates), while still using MetaMask to **sign transactions**.
-
-Create a file `.env.local` (do not commit) with:
-
-`VITE_ALCHEMY_SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>`
-
-Then restart `npm run dev`.
-
-## Run the app (for anyone cloning this repo)
-You do **NOT** need any Alchemy keys or private keys just to run the UI.
+### Chạy ứng dụng (chỉ cần làm khi clone về)
+Không cần Alchemy key, không cần private key để chạy UI.
 
 ```powershell
 npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` and connect with the MetaMask extension on **Sepolia**.
+Mở `http://localhost:5173` → Connect MetaMask → sử dụng.
 
-## Deploy the contract (optional)
-Deploy is only needed if you want your own contract address.
+### Smart contract address
+Ứng dụng đang trỏ tới contract address trong `src/constants/contract.js` (`CONTRACT_ADDRESS`).  
+Muốn nhiều máy thấy chung dữ liệu thì **cùng dùng một CONTRACT_ADDRESS**.
 
-Create a `.env` file in the project root (do not commit) with:
+### (Tuỳ chọn) Deploy contract mới (tạo “database” mới)
+Chỉ cần khi bạn muốn **deploy một contract mới** (địa chỉ mới, dữ liệu trống).
 
-`SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>`
-`DEPLOYER_PRIVATE_KEY=0x<YOUR_PRIVATE_KEY>`
+1) Tạo file `.env` (không commit) ở thư mục gốc:
+- `SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>`
+- `DEPLOYER_PRIVATE_KEY=0x<YOUR_PRIVATE_KEY>`
 
-Then:
+2) Compile + deploy:
 
 ```powershell
 npm run compile
 npm run deploy:sepolia
 ```
+
+3) Copy địa chỉ contract được in ra và cập nhật lại `src/constants/contract.js`.
+
+### (Tuỳ chọn) Alchemy RPC cho read-only
+Nếu muốn load dữ liệu ổn định hơn, tạo `.env.local` (không commit):
+- `VITE_ALCHEMY_SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>`

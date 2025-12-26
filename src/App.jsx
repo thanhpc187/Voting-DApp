@@ -16,6 +16,7 @@ export default function App() {
   const [contractHasCode, setContractHasCode] = useState(true);
   const [elections, setElections] = useState([]);
   const [selectedElection, setSelectedElection] = useState(null);
+  const [activeTab, setActiveTab] = useState("events"); // events | profile
   const [loading, setLoading] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -30,7 +31,13 @@ export default function App() {
   const [supportsV2, setSupportsV2] = useState(true);
   const [isEligible, setIsEligible] = useState(true);
   const [whitelistInput, setWhitelistInput] = useState("");
+  const [joinRequests, setJoinRequests] = useState([]); // addresses
+  const [myJoinPending, setMyJoinPending] = useState(false);
+  const [votersByCandidate, setVotersByCandidate] = useState({}); // { [candidateId]: address[] }
   const [loadError, setLoadError] = useState("");
+
+  // Profile aggregates
+  const [myVotesByElection, setMyVotesByElection] = useState({}); // { [electionId]: candidateId }
 
   const [debugLog, setDebugLog] = useState([]);
   const addLog = (msg) => setDebugLog(prev => [msg, ...prev]);
@@ -42,6 +49,24 @@ export default function App() {
       return await method.send({ from: account, gas: gasNum });
     } catch (e) {
       return await method.send({ from: account });
+    }
+  };
+
+  const loadMyProfile = async () => {
+    if (!contract || !account) return;
+    try {
+      const map = {};
+      for (const e of elections || []) {
+        try {
+          const v = await contract.methods.voteOf(e.id, account).call();
+          map[e.id] = Number(v) || 0;
+        } catch (err) {
+          map[e.id] = 0;
+        }
+      }
+      setMyVotesByElection(map);
+    } catch (e) {
+      setMyVotesByElection({});
     }
   };
 
@@ -122,8 +147,21 @@ export default function App() {
           if (selectedElection.useWhitelist) {
             const ok = await contract.methods.isEligible(selectedElection.id, account).call();
             setIsEligible(!!ok);
+
+            // request status + owner pending list
+            const pending = await contract.methods.isJoinRequestPending(selectedElection.id, account).call();
+            setMyJoinPending(!!pending);
+
+            if (selectedElection.owner?.toLowerCase() === account.toLowerCase()) {
+              const reqs = await contract.methods.getJoinRequests(selectedElection.id).call();
+              setJoinRequests(Array.isArray(reqs) ? reqs : []);
+            } else {
+              setJoinRequests([]);
+            }
           } else {
             setIsEligible(true);
+            setMyJoinPending(false);
+            setJoinRequests([]);
           }
         } catch (err) {
           console.error("Lỗi load user status:", err);
@@ -132,6 +170,46 @@ export default function App() {
       run();
     }
   }, [selectedElection, account, contract]);
+
+  // Khi chọn election, load list voters theo từng candidate (để hiển thị dưới candidate)
+  useEffect(() => {
+    if (contract && selectedElection) {
+      loadVotersForSelectedElection();
+    } else {
+      setVotersByCandidate({});
+    }
+  }, [selectedElection, contract]);
+
+  const handleRequestToJoin = async () => {
+    if (!selectedElection) return;
+    setIsDeploying(true);
+    try {
+      const m = contract.methods.requestToJoin(selectedElection.id);
+      await sendWithEstimate(m);
+      addLog("Đã gửi yêu cầu tham gia whitelist!");
+      // reload status
+      const pending = await contract.methods.isJoinRequestPending(selectedElection.id, account).call();
+      setMyJoinPending(!!pending);
+    } catch (err) {
+      addLog(`LỖI REQUEST: ${err.message}`);
+    }
+    setIsDeploying(false);
+  };
+
+  const handleApproveJoin = async (voter) => {
+    if (!selectedElection) return;
+    setIsDeploying(true);
+    try {
+      const m = contract.methods.approveJoinRequest(selectedElection.id, voter);
+      await sendWithEstimate(m);
+      addLog(`Đã duyệt whitelist: ${voter}`);
+      const reqs = await contract.methods.getJoinRequests(selectedElection.id).call();
+      setJoinRequests(Array.isArray(reqs) ? reqs : []);
+    } catch (err) {
+      addLog(`LỖI APPROVE: ${err.message}`);
+    }
+    setIsDeploying(false);
+  };
 
   const formatTime = (sec) => {
     const n = Number(sec || 0);
@@ -212,6 +290,31 @@ export default function App() {
     setLoading(false);
   };
 
+  // When elections list changes or account changes, refresh profile mapping
+  useEffect(() => {
+    if (activeTab === "profile" && contract && account) {
+      loadMyProfile();
+    }
+  }, [activeTab, contract, account, elections]);
+
+  const loadVotersForSelectedElection = async () => {
+    if (!contract || !selectedElection) return;
+    try {
+      const map = {};
+      for (const c of selectedElection.candidates || []) {
+        try {
+          const voters = await contract.methods.getVotersForCandidate(selectedElection.id, c.id).call();
+          map[c.id] = Array.isArray(voters) ? voters : [];
+        } catch (e) {
+          map[c.id] = [];
+        }
+      }
+      setVotersByCandidate(map);
+    } catch (e) {
+      setVotersByCandidate({});
+    }
+  };
+
   const handleCreate = async () => {
     if (!newTitle) return;
     const duration = Number(newDurationSeconds);
@@ -263,6 +366,7 @@ export default function App() {
       await sendWithEstimate(m);
       addLog("Vote thành công!");
       await loadData(contract, account);
+      await loadVotersForSelectedElection();
       // Reload xong sẽ tự sync lại myVote từ useEffect
     } catch (err) { addLog(`LỖI VOTE: ${err.message}`); }
     setIsDeploying(false);
@@ -275,6 +379,7 @@ export default function App() {
       await sendWithEstimate(m);
       addLog("Revoke vote thành công!");
       await loadData(contract, account);
+      await loadVotersForSelectedElection();
     } catch (err) {
       addLog(`LỖI REVOKE: ${err.message}`);
     }
@@ -303,13 +408,25 @@ export default function App() {
       
       <header className="sticky top-0 z-50 border-b border-white/5 bg-[#020617]/80 backdrop-blur-xl">
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setSelectedElection(null)}>
+          <div
+            className="flex items-center gap-2 cursor-pointer"
+            onClick={() => {
+              setSelectedElection(null);
+              setActiveTab("events");
+            }}
+          >
             <div className="w-8 h-8 bg-gradient-to-tr from-yellow-400 to-orange-500 rounded-lg flex items-center justify-center">
               <Trophy className="w-4 h-4 text-black stroke-[3]" />
             </div>
             <span className="text-lg font-bold">VOTE<span className="text-yellow-500">CHAIN</span></span>
           </div>
           <div className="flex items-center gap-3">
+             <button
+               onClick={() => setActiveTab(activeTab === "profile" ? "events" : "profile")}
+               className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm font-medium hover:bg-white/10"
+             >
+               {activeTab === "profile" ? "Events" : "Profile"}
+             </button>
              <button
                onClick={() => setShowCreateModal(true)}
                disabled={!account || wrongNetwork || isDeploying || !contractHasCode}
@@ -355,28 +472,94 @@ export default function App() {
       )}
 
       <div className="container mx-auto px-4 py-6 flex-1 flex flex-col lg:flex-row gap-8 pb-40">
-        <aside className="w-full lg:w-72 flex-shrink-0 space-y-4">
-          <div className="text-xs font-bold text-white/40 uppercase tracking-widest">Active Events</div>
-          {loading && elections.length === 0 && (
-            <div className="text-sm text-white/40 bg-white/5 border border-white/10 rounded-lg p-3">
-              Loading events...
+        {activeTab === "profile" ? (
+          <main className="flex-1 bg-[#0f172a]/50 border border-white/5 rounded-2xl p-6 min-h-[500px]">
+            <div className="mb-6 border-b border-white/5 pb-4">
+              <h1 className="text-3xl font-black uppercase mb-2">Profile</h1>
+              <div className="text-sm text-white/50">
+                Wallet: <span className="font-mono">{account || "-"}</span>
+              </div>
             </div>
-          )}
-          {!loading && elections.length === 0 && !wrongNetwork && (
-            <div className="text-sm text-white/40 bg-white/5 border border-white/10 rounded-lg p-3">
-              No events found. If you had events before, it may be a contract/ABI mismatch or you switched networks.
-            </div>
-          )}
-          {elections.map((e) => (
-            <button key={e.id} onClick={() => setSelectedElection(e)}
-              className={`w-full text-left p-3 rounded-lg border transition-all ${selectedElection?.id === e.id ? "bg-purple-500/10 border-purple-500/50 text-white" : "bg-[#0f172a] border-white/5 text-white/70"}`}>
-               <span className="text-xs bg-white/10 px-1 rounded mr-2">#{e.id}</span>
-               <span className="font-semibold text-sm">{e.title}</span>
-            </button>
-          ))}
-        </aside>
 
-        <main className="flex-1 bg-[#0f172a]/50 border border-white/5 rounded-2xl p-6 min-h-[500px]">
+            <div className="grid lg:grid-cols-2 gap-6">
+              <div className="bg-black/20 border border-white/5 rounded-xl p-4">
+                <div className="text-xs font-bold text-white/40 uppercase tracking-widest mb-3">Events you own</div>
+                <div className="space-y-2">
+                  {elections.filter((e) => account && e.owner?.toLowerCase() === account.toLowerCase()).length === 0 ? (
+                    <div className="text-sm text-white/40">None</div>
+                  ) : (
+                    elections
+                      .filter((e) => account && e.owner?.toLowerCase() === account.toLowerCase())
+                      .map((e) => (
+                        <button
+                          key={e.id}
+                          onClick={() => {
+                            setSelectedElection(e);
+                            setActiveTab("events");
+                          }}
+                          className="w-full text-left p-3 rounded-lg border border-white/5 bg-[#0f172a] hover:border-purple-500/50 transition-all"
+                        >
+                          <span className="text-xs bg-white/10 px-1 rounded mr-2">#{e.id}</span>
+                          <span className="font-semibold text-sm">{e.title}</span>
+                        </button>
+                      ))
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-black/20 border border-white/5 rounded-xl p-4">
+                <div className="text-xs font-bold text-white/40 uppercase tracking-widest mb-3">Events you joined (voted)</div>
+                <div className="space-y-2">
+                  {elections.filter((e) => (myVotesByElection?.[e.id] || 0) !== 0).length === 0 ? (
+                    <div className="text-sm text-white/40">None</div>
+                  ) : (
+                    elections
+                      .filter((e) => (myVotesByElection?.[e.id] || 0) !== 0)
+                      .map((e) => (
+                        <button
+                          key={e.id}
+                          onClick={() => {
+                            setSelectedElection(e);
+                            setActiveTab("events");
+                          }}
+                          className="w-full text-left p-3 rounded-lg border border-white/5 bg-[#0f172a] hover:border-purple-500/50 transition-all"
+                        >
+                          <span className="text-xs bg-white/10 px-1 rounded mr-2">#{e.id}</span>
+                          <span className="font-semibold text-sm">{e.title}</span>
+                          <span className="text-xs text-white/40 ml-2 font-mono">
+                            (voted #{myVotesByElection?.[e.id]})
+                          </span>
+                        </button>
+                      ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </main>
+        ) : (
+          <>
+            <aside className="w-full lg:w-72 flex-shrink-0 space-y-4">
+              <div className="text-xs font-bold text-white/40 uppercase tracking-widest">Active Events</div>
+              {loading && elections.length === 0 && (
+                <div className="text-sm text-white/40 bg-white/5 border border-white/10 rounded-lg p-3">
+                  Loading events...
+                </div>
+              )}
+              {!loading && elections.length === 0 && !wrongNetwork && (
+                <div className="text-sm text-white/40 bg-white/5 border border-white/10 rounded-lg p-3">
+                  No events found. If you had events before, it may be a contract/ABI mismatch or you switched networks.
+                </div>
+              )}
+              {elections.map((e) => (
+                <button key={e.id} onClick={() => setSelectedElection(e)}
+                  className={`w-full text-left p-3 rounded-lg border transition-all ${selectedElection?.id === e.id ? "bg-purple-500/10 border-purple-500/50 text-white" : "bg-[#0f172a] border-white/5 text-white/70"}`}>
+                   <span className="text-xs bg-white/10 px-1 rounded mr-2">#{e.id}</span>
+                   <span className="font-semibold text-sm">{e.title}</span>
+                </button>
+              ))}
+            </aside>
+
+            <main className="flex-1 bg-[#0f172a]/50 border border-white/5 rounded-2xl p-6 min-h-[500px]">
             {selectedElection ? (
                 <div className="animate-in fade-in">
                     <div className="mb-6 border-b border-white/5 pb-4 flex flex-col md:flex-row justify-between items-start gap-4">
@@ -416,6 +599,24 @@ export default function App() {
                               </div>
                             )}
 
+                            {selectedElection.useWhitelist && !isEligible && !myJoinPending && (
+                              <div className="mt-3">
+                                <button
+                                  onClick={handleRequestToJoin}
+                                  disabled={isDeploying || electionStatus?.isEnded || electionStatus?.isDeleted || wrongNetwork}
+                                  className="px-4 py-2 bg-white/10 border border-white/10 rounded-lg text-sm font-bold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  Request to join
+                                </button>
+                              </div>
+                            )}
+
+                            {selectedElection.useWhitelist && !isEligible && myJoinPending && (
+                              <div className="mt-3 text-sm text-white/50">
+                                Your request is pending owner approval.
+                              </div>
+                            )}
+
                             {!supportsV2 && legacyHasVoted && (
                               <div className="mt-3 inline-flex items-center gap-2 px-3 py-1 bg-green-500/10 border border-green-500/30 rounded-full text-green-400 text-sm font-bold">
                                 You have voted in this event
@@ -435,17 +636,40 @@ export default function App() {
 
                                 {selectedElection.useWhitelist && (
                                   <div className="mt-2 w-full max-w-md">
+                                    <div className="text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Whitelist Requests</div>
+                                    <div className="space-y-2">
+                                      {joinRequests
+                                        .filter((addr) => addr && addr !== "0x0000000000000000000000000000000000000000")
+                                        .map((addr) => (
+                                          <div key={addr} className="flex items-center justify-between gap-2 bg-black/30 border border-white/5 rounded px-3 py-2">
+                                            <div className="text-xs font-mono text-white/60">{addr}</div>
+                                            <button
+                                              onClick={() => handleApproveJoin(addr)}
+                                              disabled={isDeploying || electionStatus?.isEnded || electionStatus?.isDeleted}
+                                              className="px-3 py-1 bg-white/10 border border-white/10 rounded text-xs font-bold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                              Approve
+                                            </button>
+                                          </div>
+                                        ))}
+
+                                      {joinRequests.length === 0 && (
+                                        <div className="text-xs text-white/40">No requests yet.</div>
+                                      )}
+                                    </div>
+
+                                    <div className="mt-4 text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Manual whitelist (optional)</div>
                                     <textarea
                                       value={whitelistInput}
                                       onChange={(e) => setWhitelistInput(e.target.value)}
-                                      placeholder="Whitelist addresses (comma / newline separated)"
+                                      placeholder="Addresses (comma / newline separated)"
                                       className="w-full min-h-[80px] bg-black/40 border border-white/5 rounded px-3 py-2 text-sm text-white"
                                     />
                                     <div className="flex justify-end mt-2">
                                       <button
                                         onClick={handleRegisterVoters}
                                         disabled={isDeploying || electionStatus?.isEnded || electionStatus?.isDeleted}
-                                        className="px-4 py-2 bg-white/10 border border-white/10 rounded-lg text-sm font-bold hover:bg-white/15"
+                                        className="px-4 py-2 bg-white/10 border border-white/10 rounded-lg text-sm font-bold hover:bg-white/15 disabled:opacity-50 disabled:cursor-not-allowed"
                                       >
                                         Add to whitelist
                                       </button>
@@ -475,6 +699,7 @@ export default function App() {
                              
                              const isMyVote = myVote === Number(c.id);
                              const voteLabel = isMyVote ? "Voted" : myVote === 0 ? "VOTE" : "CHANGE VOTE";
+                             const voterList = votersByCandidate?.[c.id] || [];
 
                              return (
                                 <div key={idx} className={`relative p-4 rounded-xl border flex justify-between items-center transition-all overflow-hidden ${actionsDisabled ? "bg-[#0f172a] border-white/5 opacity-75" : "bg-[#020617] border-white/5 hover:border-purple-500/50 group"}`}>
@@ -485,6 +710,21 @@ export default function App() {
                                         </div>
                                         <div className="w-full bg-white/5 h-1.5 rounded-full overflow-hidden max-w-md">
                                             <div className="h-full bg-gradient-to-r from-purple-500 to-indigo-500 transition-all duration-500" style={{ width: `${percent}%` }}></div>
+                                        </div>
+
+                                        <div className="mt-2 text-xs text-white/40">
+                                          <span className="font-bold text-white/50">Voters:</span>{" "}
+                                          {voterList.length === 0 ? (
+                                            <span>none</span>
+                                          ) : (
+                                            <span className="font-mono">
+                                              {voterList
+                                                .slice(0, 8)
+                                                .map((a) => `${a.slice(0, 6)}...${a.slice(-4)}`)
+                                                .join(", ")}
+                                              {voterList.length > 8 ? ` (+${voterList.length - 8} more)` : ""}
+                                            </span>
+                                          )}
                                         </div>
                                     </div>
                                     
@@ -521,6 +761,8 @@ export default function App() {
                 </div>
             )}
         </main>
+          </>
+        )}
       </div>
 
       {showCreateModal && (

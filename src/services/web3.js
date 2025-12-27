@@ -10,18 +10,41 @@ function parseChainId(chainIdHex) {
   return null;
 }
 
-export async function connectWallet() {
-  if (!window.ethereum) throw new Error("MetaMask not found (window.ethereum missing)");
+export function getEthereum() {
+  return window.ethereum;
+}
 
-  await window.ethereum.request({ method: "eth_requestAccounts" });
-  const web3 = new Web3(window.ethereum);
-  const accounts = await web3.eth.getAccounts();
-  const account = accounts?.[0] || null;
+export function hasWalletProvider() {
+  return !!getEthereum();
+}
 
-  const chainIdHex = await window.ethereum.request({ method: "eth_chainId" });
-  const chainId = parseChainId(chainIdHex);
+export function getWeb3() {
+  const eth = getEthereum();
+  if (!eth) throw new Error("MetaMask not found (window.ethereum missing)");
+  return new Web3(eth);
+}
 
-  return { web3, account, chainId };
+export async function getChainId() {
+  const eth = getEthereum();
+  if (!eth) return null;
+  const chainIdHex = await eth.request({ method: "eth_chainId" });
+  return parseChainId(chainIdHex);
+}
+
+export async function getConnectedAccount() {
+  // Silent check (does NOT trigger MetaMask popup)
+  const eth = getEthereum();
+  if (!eth) return null;
+  const accounts = await eth.request({ method: "eth_accounts" });
+  return accounts?.[0] || null;
+}
+
+export async function requestConnectWallet() {
+  // Explicit connect (WILL trigger MetaMask popup)
+  const eth = getEthereum();
+  if (!eth) throw new Error("MetaMask not found (window.ethereum missing)");
+  const accounts = await eth.request({ method: "eth_requestAccounts" });
+  return accounts?.[0] || null;
 }
 
 export function createReadOnlyWeb3() {
@@ -41,6 +64,45 @@ export function shortAddress(addr) {
   const s = String(addr);
   if (s.length <= 12) return s;
   return `${s.slice(0, 6)}...${s.slice(-4)}`;
+}
+
+export async function switchToSepolia() {
+  const eth = getEthereum();
+  if (!eth) throw new Error("MetaMask not found (window.ethereum missing)");
+
+  const chainIdHex = "0xaa36a7"; // 11155111
+
+  try {
+    await eth.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: chainIdHex }],
+    });
+    return true;
+  } catch (err) {
+    // 4902 = chain not added
+    if (err?.code !== 4902) throw err;
+  }
+
+  // Add chain then switch
+  await eth.request({
+    method: "wallet_addEthereumChain",
+    params: [
+      {
+        chainId: chainIdHex,
+        chainName: "Sepolia",
+        nativeCurrency: { name: "SepoliaETH", symbol: "ETH", decimals: 18 },
+        rpcUrls: ["https://rpc.ankr.com/eth_sepolia"],
+        blockExplorerUrls: ["https://sepolia.etherscan.io"],
+      },
+    ],
+  });
+
+  await eth.request({
+    method: "wallet_switchEthereumChain",
+    params: [{ chainId: chainIdHex }],
+  });
+
+  return true;
 }
 
 

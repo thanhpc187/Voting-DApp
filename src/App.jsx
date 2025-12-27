@@ -1,12 +1,44 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Trophy, Gamepad2, Zap, Lock } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Trophy,
+  Gamepad2,
+  Zap,
+  Lock,
+  Wallet,
+  ArrowRightLeft,
+  ExternalLink,
+  Copy,
+  Loader2,
+  Search,
+  CheckCircle2,
+  XCircle,
+  Info,
+} from "lucide-react";
 import VOTING_ABI from "./abi.json";
 import { CONTRACT_ADDRESS } from "./constants/contract";
 import { TARGET_CHAIN_ID, TARGET_NETWORK_NAME } from "./constants/contract";
-import { connectWallet, createVotingContract, shortAddress } from "./services/web3";
+import {
+  createVotingContract,
+  getChainId,
+  getConnectedAccount,
+  getWeb3,
+  hasWalletProvider,
+  requestConnectWallet,
+  shortAddress,
+  switchToSepolia,
+} from "./services/web3";
 
 // Danh sách game mẫu
 const GOTY_GAMES = ["Elden Ring", "Dragon's Dogma 2", "Black Myth: Wukong", "Final Fantasy VII", "Helldivers 2"];
+
+function cx(...parts) {
+  return parts.filter(Boolean).join(" ");
+}
+
+function etherscanAddressUrl(addr) {
+  if (!addr) return null;
+  return `https://sepolia.etherscan.io/address/${addr}`;
+}
 
 export default function App() {
   const [account, setAccount] = useState(null);
@@ -24,6 +56,23 @@ export default function App() {
   const [newDurationSeconds, setNewDurationSeconds] = useState("3600");
   const [newUseWhitelist, setNewUseWhitelist] = useState(false);
   const [newCandidateName, setNewCandidateName] = useState("");
+  const [walletMissing, setWalletMissing] = useState(false);
+  const [connectBusy, setConnectBusy] = useState(false);
+  const [eventQuery, setEventQuery] = useState("");
+  const [eventFilter, setEventFilter] = useState("all"); // all | active | ended | deleted
+
+  // Toasts
+  const [toasts, setToasts] = useState([]);
+  const toastSeq = useRef(1);
+  const pushToast = (t) => {
+    const id = toastSeq.current++;
+    const toast = { id, type: t.type || "info", title: t.title || "", message: t.message || "" };
+    setToasts((prev) => [toast, ...prev].slice(0, 4));
+    window.setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== id)), t.ttlMs ?? 3500);
+  };
+  const notifyError = (title, message) => pushToast({ type: "error", title, message });
+  const notifySuccess = (title, message) => pushToast({ type: "success", title, message });
+  const notifyInfo = (title, message) => pushToast({ type: "info", title, message });
   
   // --- V2 STATE: Phiếu hiện tại của user trong election đang chọn (0 = chưa vote) ---
   const [myVote, setMyVote] = useState(0);
@@ -40,7 +89,10 @@ export default function App() {
   const [myVotesByElection, setMyVotesByElection] = useState({}); // { [electionId]: candidateId }
 
   const [debugLog, setDebugLog] = useState([]);
-  const addLog = (msg) => setDebugLog(prev => [msg, ...prev]);
+  const addLog = (msg) => {
+    setDebugLog((prev) => [msg, ...prev]);
+    console.log(msg);
+  };
 
   const sendWithEstimate = async (method) => {
     try {
@@ -73,8 +125,14 @@ export default function App() {
   useEffect(() => {
     const init = async () => {
       try {
-        const { web3, account: acc, chainId: cid } = await connectWallet();
-        setAccount(acc);
+        if (!hasWalletProvider()) {
+          setWalletMissing(true);
+          return;
+        }
+
+        const web3 = getWeb3();
+
+        const cid = await getChainId();
         setChainId(cid);
         const isWrong = Number(cid) !== TARGET_CHAIN_ID;
         setWrongNetwork(isWrong);
@@ -89,16 +147,72 @@ export default function App() {
 
         const signerContract = createVotingContract(web3, VOTING_ABI, CONTRACT_ADDRESS);
         setContract(signerContract);
-        if (!isWrong) loadData(signerContract, acc);
+
+        // Silent connect check (no popup). If user already connected, auto-load.
+        const acc = await getConnectedAccount();
+        setAccount(acc);
+        if (acc && !isWrong) loadData(signerContract, acc);
 
         window.ethereum?.on("accountsChanged", () => window.location.reload());
         window.ethereum?.on("chainChanged", () => window.location.reload());
       } catch (err) {
-        addLog(`LỖI INIT: ${err.message}`);
+        notifyError("Init failed", err?.message || "Unknown error");
+        addLog(`LỖI INIT: ${err?.message}`);
       }
     };
     init();
   }, []);
+
+  const handleConnect = async () => {
+    if (!hasWalletProvider()) {
+      setWalletMissing(true);
+      return;
+    }
+    setConnectBusy(true);
+    try {
+      const acc = await requestConnectWallet();
+      setAccount(acc);
+
+      const cid = await getChainId();
+      setChainId(cid);
+      const isWrong = Number(cid) !== TARGET_CHAIN_ID;
+      setWrongNetwork(isWrong);
+
+      if (!isWrong && contract && acc) {
+        await loadData(contract, acc);
+        notifySuccess("Wallet connected", shortAddress(acc));
+      } else {
+        notifyInfo("Wallet connected", "Please switch to Sepolia to continue.");
+      }
+    } catch (err) {
+      notifyError("Connect failed", err?.message || "MetaMask rejected the request");
+    }
+    setConnectBusy(false);
+  };
+
+  const handleSwitchNetwork = async () => {
+    if (!hasWalletProvider()) {
+      setWalletMissing(true);
+      return;
+    }
+    setConnectBusy(true);
+    try {
+      await switchToSepolia();
+      notifySuccess("Network switched", "You are now on Sepolia.");
+    } catch (err) {
+      notifyError("Switch failed", err?.message || "Could not switch network");
+    }
+    setConnectBusy(false);
+  };
+
+  const handleCopy = async (value, label) => {
+    try {
+      await navigator.clipboard.writeText(String(value));
+      notifySuccess("Copied", label || "Copied to clipboard");
+    } catch (err) {
+      notifyError("Copy failed", "Browser blocked clipboard access");
+    }
+  };
 
   const electionStatus = useMemo(() => {
     if (!selectedElection) return null;
@@ -154,7 +268,18 @@ export default function App() {
 
             if (selectedElection.owner?.toLowerCase() === account.toLowerCase()) {
               const reqs = await contract.methods.getJoinRequests(selectedElection.id).call();
-              setJoinRequests(Array.isArray(reqs) ? reqs : []);
+              const raw = Array.isArray(reqs) ? reqs : [];
+              // Filter pending only for a cleaner owner UX (avoid "already approved" noise)
+              const statuses = await Promise.all(
+                raw.map((addr) =>
+                  contract.methods
+                    .isJoinRequestPending(selectedElection.id, addr)
+                    .call()
+                    .then((x) => !!x)
+                    .catch(() => false)
+                )
+              );
+              setJoinRequests(raw.filter((addr, idx) => statuses[idx]));
             } else {
               setJoinRequests([]);
             }
@@ -186,12 +311,14 @@ export default function App() {
     try {
       const m = contract.methods.requestToJoin(selectedElection.id);
       await sendWithEstimate(m);
+      notifySuccess("Request sent", "Your whitelist request is pending owner approval.");
       addLog("Đã gửi yêu cầu tham gia whitelist!");
       // reload status
       const pending = await contract.methods.isJoinRequestPending(selectedElection.id, account).call();
       setMyJoinPending(!!pending);
     } catch (err) {
-      addLog(`LỖI REQUEST: ${err.message}`);
+      notifyError("Request failed", err?.message || "Transaction failed");
+      addLog(`LỖI REQUEST: ${err?.message}`);
     }
     setIsDeploying(false);
   };
@@ -202,11 +329,23 @@ export default function App() {
     try {
       const m = contract.methods.approveJoinRequest(selectedElection.id, voter);
       await sendWithEstimate(m);
+      notifySuccess("Approved", shortAddress(voter));
       addLog(`Đã duyệt whitelist: ${voter}`);
       const reqs = await contract.methods.getJoinRequests(selectedElection.id).call();
-      setJoinRequests(Array.isArray(reqs) ? reqs : []);
+      const raw = Array.isArray(reqs) ? reqs : [];
+      const statuses = await Promise.all(
+        raw.map((addr) =>
+          contract.methods
+            .isJoinRequestPending(selectedElection.id, addr)
+            .call()
+            .then((x) => !!x)
+            .catch(() => false)
+        )
+      );
+      setJoinRequests(raw.filter((addr, idx) => statuses[idx]));
     } catch (err) {
-      addLog(`LỖI APPROVE: ${err.message}`);
+      notifyError("Approve failed", err?.message || "Transaction failed");
+      addLog(`LỖI APPROVE: ${err?.message}`);
     }
     setIsDeploying(false);
   };
@@ -324,12 +463,16 @@ export default function App() {
       // V2 signature
       const m = contract.methods.createElection(newTitle, duration, !!newUseWhitelist);
       await sendWithEstimate(m);
+      notifySuccess("Event created", newTitle);
       setNewTitle("");
       setNewDurationSeconds("3600");
       setNewUseWhitelist(false);
       setShowCreateModal(false);
       await loadData(contract, account);
-    } catch (err) { addLog(`LỖI TẠO: ${err.message}`); }
+    } catch (err) {
+      notifyError("Create failed", err?.message || "Transaction failed");
+      addLog(`LỖI TẠO: ${err?.message}`);
+    }
     setIsDeploying(false);
   };
 
@@ -339,9 +482,13 @@ export default function App() {
     try {
       const m = contract.methods.addCandidate(selectedElection.id, newCandidateName);
       await sendWithEstimate(m);
+      notifySuccess("Candidate added", newCandidateName);
       setNewCandidateName("");
       await loadData(contract, account);
-    } catch (err) { addLog(`LỖI THÊM: ${err.message}`); }
+    } catch (err) {
+      notifyError("Add failed", err?.message || "Transaction failed");
+      addLog(`LỖI THÊM: ${err?.message}`);
+    }
     setIsDeploying(false);
   };
 
@@ -354,8 +501,12 @@ export default function App() {
             const m = contract.methods.addCandidate(selectedElection.id, game);
             await sendWithEstimate(m);
         }
+        notifySuccess("Auto-added candidates", `Added ${GOTY_GAMES.length} games`);
         await loadData(contract, account);
-    } catch (err) { addLog(`LỖI AUTO: ${err.message}`); }
+    } catch (err) {
+      notifyError("Auto add failed", err?.message || "Transaction failed");
+      addLog(`LỖI AUTO: ${err?.message}`);
+    }
     setIsDeploying(false);
   };
 
@@ -364,11 +515,15 @@ export default function App() {
     try {
       const m = contract.methods.vote(selectedElection.id, candId);
       await sendWithEstimate(m);
+      notifySuccess("Vote submitted", "Your vote has been recorded.");
       addLog("Vote thành công!");
       await loadData(contract, account);
       await loadVotersForSelectedElection();
       // Reload xong sẽ tự sync lại myVote từ useEffect
-    } catch (err) { addLog(`LỖI VOTE: ${err.message}`); }
+    } catch (err) {
+      notifyError("Vote failed", err?.message || "Transaction failed");
+      addLog(`LỖI VOTE: ${err?.message}`);
+    }
     setIsDeploying(false);
   };
 
@@ -377,11 +532,13 @@ export default function App() {
     try {
       const m = contract.methods.revokeVote(selectedElection.id);
       await sendWithEstimate(m);
+      notifySuccess("Vote revoked", "Your vote has been removed.");
       addLog("Revoke vote thành công!");
       await loadData(contract, account);
       await loadVotersForSelectedElection();
     } catch (err) {
-      addLog(`LỖI REVOKE: ${err.message}`);
+      notifyError("Revoke failed", err?.message || "Transaction failed");
+      addLog(`LỖI REVOKE: ${err?.message}`);
     }
     setIsDeploying(false);
   };
@@ -394,20 +551,77 @@ export default function App() {
     try {
       const m = contract.methods.registerVoters(selectedElection.id, voters);
       await sendWithEstimate(m);
+      notifySuccess("Whitelisted", `Added ${voters.length} address(es)`);
       addLog(`Whitelist thành công: +${voters.length} voters`);
       setWhitelistInput("");
       await loadData(contract, account);
     } catch (err) {
-      addLog(`LỖI WHITELIST: ${err.message}`);
+      notifyError("Whitelist failed", err?.message || "Transaction failed");
+      addLog(`LỖI WHITELIST: ${err?.message}`);
     }
     setIsDeploying(false);
   };
 
+  const visibleElections = useMemo(() => {
+    const q = eventQuery.trim().toLowerCase();
+    let list = Array.isArray(elections) ? elections : [];
+
+    if (q) {
+      list = list.filter((e) => String(e.title || "").toLowerCase().includes(q) || String(e.id).includes(q));
+    }
+
+    if (eventFilter !== "all") {
+      const now = Math.floor(Date.now() / 1000);
+      list = list.filter((e) => {
+        const isDeleted = !!e.isDeleted;
+        const legacyClosed = e.isOpen === false;
+        const end = Number(e.endTime || 0);
+        const isEnded = legacyClosed || (end > 0 ? now >= end : false);
+        const isActive = !isDeleted && !isEnded;
+        if (eventFilter === "active") return isActive;
+        if (eventFilter === "ended") return isEnded && !isDeleted;
+        if (eventFilter === "deleted") return isDeleted;
+        return true;
+      });
+    }
+
+    return list;
+  }, [elections, eventQuery, eventFilter]);
+
   return (
     <div className="min-h-screen bg-[#020617] text-white font-sans selection:bg-purple-500 selection:text-white flex flex-col relative">
+      {/* Toasts */}
+      <div className="fixed top-4 right-4 z-[200] space-y-2 w-[340px] max-w-[calc(100vw-2rem)]">
+        {toasts.map((t) => {
+          const Icon = t.type === "success" ? CheckCircle2 : t.type === "error" ? XCircle : Info;
+          const tone =
+            t.type === "success"
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+              : t.type === "error"
+                ? "border-red-500/30 bg-red-500/10 text-red-200"
+                : "border-white/10 bg-white/5 text-white/80";
+          return (
+            <div key={t.id} className={cx("p-3 rounded-xl border backdrop-blur-xl shadow-lg", tone)}>
+              <div className="flex gap-2 items-start">
+                <Icon className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  {t.title && <div className="text-sm font-bold">{t.title}</div>}
+                  {t.message && <div className="text-xs opacity-80 mt-0.5">{t.message}</div>}
+                </div>
+                <button
+                  className="text-xs opacity-60 hover:opacity-100"
+                  onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
       
       <header className="sticky top-0 z-50 border-b border-white/5 bg-[#020617]/80 backdrop-blur-xl">
-        <div className="container mx-auto px-4 h-16 flex items-center justify-between">
+        <div className="container mx-auto px-4 h-16 flex items-center justify-between gap-4">
           <div
             className="flex items-center gap-2 cursor-pointer"
             onClick={() => {
@@ -420,7 +634,28 @@ export default function App() {
             </div>
             <span className="text-lg font-bold">VOTE<span className="text-yellow-500">CHAIN</span></span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 md:gap-3">
+             <div className="hidden md:flex items-center gap-2">
+               <div
+                 className={cx(
+                   "px-3 py-1 rounded-full text-xs font-bold border",
+                   wrongNetwork
+                     ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-200"
+                     : "bg-emerald-500/10 border-emerald-500/30 text-emerald-200"
+                 )}
+               >
+                 {wrongNetwork ? `Wrong network (${chainId ?? "?"})` : `${TARGET_NETWORK_NAME}`}
+               </div>
+               <a
+                 href={etherscanAddressUrl(CONTRACT_ADDRESS) || undefined}
+                 target="_blank"
+                 rel="noreferrer"
+                 className="px-3 py-1 rounded-full text-xs font-bold border bg-white/5 border-white/10 text-white/70 hover:bg-white/10 inline-flex items-center gap-1"
+                 title="View contract on Etherscan"
+               >
+                 {shortAddress(CONTRACT_ADDRESS)} <ExternalLink className="w-3 h-3" />
+               </a>
+             </div>
              <button
                onClick={() => setActiveTab(activeTab === "profile" ? "events" : "profile")}
                className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm font-medium hover:bg-white/10"
@@ -430,16 +665,63 @@ export default function App() {
              <button
                onClick={() => setShowCreateModal(true)}
                disabled={!account || wrongNetwork || isDeploying || !contractHasCode}
-               className="px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm font-medium hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+               className="hidden sm:inline-flex px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-sm font-medium hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
              >
                + New Event
              </button>
-             <div className="px-3 py-2 bg-[#0f172a] border border-white/5 rounded-lg text-xs font-mono text-white/60">
-                {account ? shortAddress(account) : "No Wallet"}
-             </div>
+             {account ? (
+               <div className="flex items-center gap-2 px-3 py-2 bg-[#0f172a] border border-white/5 rounded-lg">
+                 <a
+                   href={etherscanAddressUrl(account) || undefined}
+                   target="_blank"
+                   rel="noreferrer"
+                   className="text-xs font-mono text-white/70 hover:text-white inline-flex items-center gap-1"
+                   title="View wallet on Etherscan"
+                 >
+                   {shortAddress(account)} <ExternalLink className="w-3 h-3" />
+                 </a>
+                 <button
+                   className="text-white/60 hover:text-white"
+                   title="Copy address"
+                   onClick={() => handleCopy(account, "Wallet address copied")}
+                 >
+                   <Copy className="w-4 h-4" />
+                 </button>
+               </div>
+             ) : (
+               <button
+                 onClick={handleConnect}
+                 disabled={connectBusy || walletMissing}
+                 className="px-4 py-2 bg-gradient-to-tr from-purple-600 to-indigo-500 rounded-lg text-sm font-bold hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
+               >
+                 {connectBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wallet className="w-4 h-4" />}
+                 Connect
+               </button>
+             )}
           </div>
         </div>
       </header>
+
+      {walletMissing && (
+        <div className="container mx-auto px-4 mt-4">
+          <div className="p-4 rounded-xl bg-white/5 border border-white/10 text-white/80 flex items-start justify-between gap-4">
+            <div>
+              <div className="font-bold">MetaMask not found</div>
+              <div className="text-sm text-white/60 mt-1">
+                Please install MetaMask, then refresh this page to use the dApp.
+              </div>
+            </div>
+            <a
+              href="https://metamask.io/"
+              target="_blank"
+              rel="noreferrer"
+              className="px-4 py-2 bg-white/10 border border-white/10 rounded-lg text-sm font-bold hover:bg-white/15"
+            >
+              Get MetaMask
+            </a>
+          </div>
+        </div>
+      )}
 
       {!contractHasCode && (
         <div className="container mx-auto px-4 mt-4">
@@ -464,8 +746,18 @@ export default function App() {
                 Current chainId: {chainId ?? "unknown"} • Required: {TARGET_CHAIN_ID}
               </div>
             </div>
-            <div className="text-xs text-yellow-200/60 font-mono">
-              Contract: {shortAddress(CONTRACT_ADDRESS)}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleSwitchNetwork}
+                disabled={connectBusy}
+                className="px-4 py-2 bg-yellow-500/20 border border-yellow-500/30 rounded-lg text-sm font-bold hover:bg-yellow-500/30 disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                {connectBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRightLeft className="w-4 h-4" />}
+                Switch
+              </button>
+              <div className="hidden md:block text-xs text-yellow-200/60 font-mono">
+                Contract: {shortAddress(CONTRACT_ADDRESS)}
+              </div>
             </div>
           </div>
         </div>
@@ -538,25 +830,86 @@ export default function App() {
           </main>
         ) : (
           <>
-            <aside className="w-full lg:w-72 flex-shrink-0 space-y-4">
-              <div className="text-xs font-bold text-white/40 uppercase tracking-widest">Active Events</div>
-              {loading && elections.length === 0 && (
-                <div className="text-sm text-white/40 bg-white/5 border border-white/10 rounded-lg p-3">
-                  Loading events...
-                </div>
-              )}
-              {!loading && elections.length === 0 && !wrongNetwork && (
-                <div className="text-sm text-white/40 bg-white/5 border border-white/10 rounded-lg p-3">
-                  No events found. If you had events before, it may be a contract/ABI mismatch or you switched networks.
-                </div>
-              )}
-              {elections.map((e) => (
-                <button key={e.id} onClick={() => setSelectedElection(e)}
-                  className={`w-full text-left p-3 rounded-lg border transition-all ${selectedElection?.id === e.id ? "bg-purple-500/10 border-purple-500/50 text-white" : "bg-[#0f172a] border-white/5 text-white/70"}`}>
-                   <span className="text-xs bg-white/10 px-1 rounded mr-2">#{e.id}</span>
-                   <span className="font-semibold text-sm">{e.title}</span>
+            <aside className="w-full lg:w-80 flex-shrink-0 space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-bold text-white/40 uppercase tracking-widest">Events</div>
+                <button
+                  onClick={() => setShowCreateModal(true)}
+                  disabled={!account || wrongNetwork || isDeploying || !contractHasCode}
+                  className="sm:hidden px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs font-bold hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  + New
                 </button>
-              ))}
+              </div>
+
+              <div className="bg-[#0f172a]/50 border border-white/5 rounded-2xl p-3">
+                <div className="flex items-center gap-2 px-3 py-2 bg-black/30 border border-white/5 rounded-xl">
+                  <Search className="w-4 h-4 text-white/40" />
+                  <input
+                    value={eventQuery}
+                    onChange={(e) => setEventQuery(e.target.value)}
+                    placeholder="Search by title or #id..."
+                    className="w-full bg-transparent outline-none text-sm text-white/80 placeholder:text-white/30"
+                  />
+                </div>
+
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {["all", "active", "ended", "deleted"].map((k) => (
+                    <button
+                      key={k}
+                      onClick={() => setEventFilter(k)}
+                      className={cx(
+                        "px-3 py-1 rounded-full text-xs font-bold border",
+                        eventFilter === k
+                          ? "bg-purple-500/15 border-purple-500/40 text-purple-200"
+                          : "bg-white/5 border-white/10 text-white/60 hover:bg-white/10"
+                      )}
+                    >
+                      {k.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {loading && elections.length === 0 && (
+                <div className="space-y-2">
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <div key={i} className="h-12 rounded-xl bg-white/5 border border-white/10 animate-pulse" />
+                  ))}
+                </div>
+              )}
+
+              {!loading && visibleElections.length === 0 && !wrongNetwork && (
+                <div className="text-sm text-white/50 bg-white/5 border border-white/10 rounded-2xl p-4">
+                  <div className="font-bold text-white/70">No events found</div>
+                  <div className="text-xs mt-1 text-white/40">
+                    Try a different filter/search. If you had events before, check contract address / network.
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {visibleElections.map((e) => (
+                  <button
+                    key={e.id}
+                    onClick={() => setSelectedElection(e)}
+                    className={cx(
+                      "w-full text-left p-3 rounded-xl border transition-all",
+                      selectedElection?.id === e.id
+                        ? "bg-purple-500/10 border-purple-500/50 text-white"
+                        : "bg-[#0f172a] border-white/5 text-white/70 hover:border-white/10 hover:bg-white/5"
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs text-white/40 font-mono">#{e.id}</div>
+                        <div className="font-semibold text-sm truncate">{e.title}</div>
+                      </div>
+                      <div className="text-xs text-white/40">{e.useWhitelist ? "WL" : "OPEN"}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </aside>
 
             <main className="flex-1 bg-[#0f172a]/50 border border-white/5 rounded-2xl p-6 min-h-[500px]">
@@ -755,9 +1108,24 @@ export default function App() {
                     </div>
                 </div>
             ) : (
-                <div className="h-full flex flex-col items-center justify-center text-white/30">
-                    <Gamepad2 className="w-12 h-12 mb-4 opacity-50"/>
-                    <p>Chọn một sự kiện để xem.</p>
+                <div className="h-full flex flex-col items-center justify-center text-white/40 text-center px-4">
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600/20 to-indigo-500/20 border border-white/10 flex items-center justify-center mb-4">
+                      <Gamepad2 className="w-7 h-7 opacity-80" />
+                    </div>
+                    <div className="text-lg font-black uppercase">Select an event</div>
+                    <div className="text-sm text-white/40 mt-1 max-w-md">
+                      Browse events on the left. Connect your wallet to create events, add candidates, and vote.
+                    </div>
+                    {!account && !walletMissing && (
+                      <button
+                        onClick={handleConnect}
+                        disabled={connectBusy}
+                        className="mt-5 px-5 py-3 bg-gradient-to-tr from-purple-600 to-indigo-500 rounded-xl text-sm font-bold hover:brightness-110 disabled:opacity-50 inline-flex items-center gap-2"
+                      >
+                        {connectBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wallet className="w-4 h-4" />}
+                        Connect Wallet
+                      </button>
+                    )}
                 </div>
             )}
         </main>
@@ -767,30 +1135,77 @@ export default function App() {
 
       {showCreateModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4">
-            <div className="bg-[#0f172a] border border-white/10 p-6 rounded-2xl w-full max-w-md">
-                <h3 className="font-bold mb-4">Create Event</h3>
-                <input autoFocus value={newTitle} onChange={e => setNewTitle(e.target.value)} className="w-full bg-black/50 border border-white/10 rounded p-3 mb-4 text-white" placeholder="Title..."/>
-                <div className="grid grid-cols-1 gap-3 mb-4">
-                  <input
-                    value={newDurationSeconds}
-                    onChange={(e) => setNewDurationSeconds(e.target.value)}
-                    className="w-full bg-black/50 border border-white/10 rounded p-3 text-white"
-                    placeholder="Duration (seconds)"
-                    inputMode="numeric"
-                  />
-                  <label className="flex items-center gap-2 text-sm text-white/70">
+            <div className="bg-[#0f172a] border border-white/10 p-6 rounded-2xl w-full max-w-md shadow-2xl">
+                <div className="flex items-start justify-between gap-4 mb-4">
+                  <div>
+                    <h3 className="font-black text-lg uppercase">Create Event</h3>
+                    <div className="text-xs text-white/40 mt-1">Create an on-chain voting event on Sepolia.</div>
+                  </div>
+                  <button
+                    onClick={() => setShowCreateModal(false)}
+                    className="px-2 py-1 text-white/60 hover:text-white"
+                    title="Close"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Title</div>
+                    <input
+                      autoFocus
+                      value={newTitle}
+                      onChange={(e) => setNewTitle(e.target.value)}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-3 text-white outline-none focus:border-purple-500/50"
+                      placeholder="e.g. Game of the Year 2025"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="text-xs font-bold text-white/40 uppercase tracking-widest mb-2">Duration</div>
+                    <input
+                      value={newDurationSeconds}
+                      onChange={(e) => setNewDurationSeconds(e.target.value)}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-3 text-white outline-none focus:border-purple-500/50"
+                      placeholder="Seconds (e.g. 3600)"
+                      inputMode="numeric"
+                    />
+                    <div className="text-xs text-white/30 mt-1">Tip: 3600 = 1 hour • 86400 = 24 hours</div>
+                  </div>
+
+                  <label className="flex items-center gap-2 text-sm text-white/70 select-none">
                     <input
                       type="checkbox"
                       checked={newUseWhitelist}
                       onChange={(e) => setNewUseWhitelist(e.target.checked)}
                     />
-                    Enable whitelist
+                    Enable whitelist (owner approval required)
                   </label>
                 </div>
-                <div className="flex gap-2">
-                    <button onClick={() => setShowCreateModal(false)} className="flex-1 py-2 bg-white/10 rounded">Cancel</button>
-                    <button onClick={handleCreate} className="flex-1 py-2 bg-purple-600 rounded text-white font-bold">Create</button>
+
+                <div className="flex gap-2 mt-5">
+                    <button
+                      onClick={() => setShowCreateModal(false)}
+                      className="flex-1 py-2.5 bg-white/5 border border-white/10 rounded-xl text-sm font-bold hover:bg-white/10"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleCreate}
+                      disabled={!newTitle || Number(newDurationSeconds) <= 0 || isDeploying || wrongNetwork || !account}
+                      className="flex-1 py-2.5 bg-purple-600 rounded-xl text-white text-sm font-bold hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
+                    >
+                      {isDeploying ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                      Create
+                    </button>
                 </div>
+
+                {!account && (
+                  <div className="text-xs text-white/40 mt-3">
+                    Connect your wallet first to create an event.
+                  </div>
+                )}
             </div>
         </div>
       )}
